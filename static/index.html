@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSINT Graph Matrix</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        :root {
+            --bg: #08131c;
+            --bg-soft: rgba(9, 23, 32, 0.86);
+            --panel: rgba(11, 24, 34, 0.82);
+            --panel-strong: rgba(13, 28, 40, 0.96);
+            --line: rgba(160, 202, 227, 0.14);
+            --text: #e5f3fb;
+            --muted: #88a9bb;
+            --accent: #5be7c4;
+            --accent-2: #ff9f43;
+            --accent-3: #6eb7ff;
+            --danger: #ff6d7a;
+            --context: #c7a8ff;
+            --intel: #66e0ff;
+            --confirmed: #58f0b1;
+            --shadow: 0 24px 60px rgba(0, 0, 0, 0.38);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background:
+                radial-gradient(circle at 20% 20%, rgba(91, 231, 196, 0.12), transparent 24%),
+                radial-gradient(circle at 80% 15%, rgba(110, 183, 255, 0.16), transparent 24%),
+                radial-gradient(circle at 70% 75%, rgba(255, 159, 67, 0.12), transparent 18%),
+                linear-gradient(140deg, #050d13 0%, #08131c 45%, #0b1823 100%);
+            color: var(--text);
+            font-family: "Space Grotesk", sans-serif;
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(135, 176, 204, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(135, 176, 204, 0.05) 1px, transparent 1px);
+            background-size: 42px 42px;
+            pointer-events: none;
+        }
+
+        #mynetwork {
+            position: absolute;
+            inset: 0;
+            z-index: 1;
+        }
+
+        .shell {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            z-index: 2;
+            pointer-events: none;
+        }
+
+        .panel,
+        .floating,
+        .sidebar,
+        .legend {
+            pointer-events: auto;
+        }
+
+        .panel {
+            position: absolute;
+            top: 18px;
+            left: 18px;
+            width: 320px;
+            padding: 20px 20px 18px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            backdrop-filter: blur(16px);
+            box-shadow: var(--shadow);
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: rgba(91, 231, 196, 0.08);
+            color: var(--accent);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+        }
+
+        .panel h1 {
+            margin: 14px 0 10px;
+            font-size: 30px;
+            line-height: 1;
+            letter-spacing: -0.04em;
+        }
+
+        .panel p {
+            margin: 0 0 18px;
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.55;
+        }
+
+        .stack {
+            display: grid;
+            gap: 12px;
+        }
+
+        select,
+        input[type="text"],
+        input[type="file"] {
+            width: 100%;
+            border: 1px solid rgba(176, 217, 238, 0.13);
+            border-radius: 16px;
+            background: rgba(7, 18, 26, 0.88);
+            color: var(--text);
+            padding: 13px 14px;
+            font-family: "Space Grotesk", sans-serif;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s ease, transform 0.2s ease;
+        }
+
+        select:focus,
+        input[type="text"]:focus,
+        input[type="file"]:focus {
+            border-color: rgba(91, 231, 196, 0.46);
+            transform: translateY(-1px);
+        }
+
+        .button-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        button {
+            border: 0;
+            border-radius: 16px;
+            cursor: pointer;
+            font-family: "Space Grotesk", sans-serif;
+            font-weight: 700;
+            transition: transform 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        button:hover {
+            transform: translateY(-1px);
+        }
+
+        .btn-primary {
+            padding: 13px 16px;
+            background: linear-gradient(135deg, var(--accent), #1fd8e4);
+            color: #041016;
+            box-shadow: 0 12px 28px rgba(91, 231, 196, 0.24);
+        }
+
+        .btn-secondary {
+            padding: 13px 16px;
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--text);
+            border: 1px solid rgba(188, 220, 237, 0.12);
+        }
+
+        .btn-wide {
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        .divider {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(198, 223, 237, 0.15), transparent);
+            margin: 18px 0 16px;
+        }
+
+        .label {
+            margin-bottom: 8px;
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+        }
+
+        .loader {
+            display: none;
+            margin-top: 12px;
+            padding: 10px 12px;
+            border-radius: 14px;
+            background: rgba(102, 224, 255, 0.08);
+            color: var(--intel);
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .scan-log {
+            display: none;
+            margin-top: 12px;
+            padding: 10px;
+            border-radius: 16px;
+            background: rgba(7, 18, 27, 0.86);
+            border: 1px solid rgba(188, 220, 237, 0.1);
+        }
+
+        .scan-log-title {
+            margin-bottom: 8px;
+            color: var(--muted);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+        }
+
+        .scan-log-list {
+            display: grid;
+            gap: 6px;
+            max-height: 120px;
+            overflow: auto;
+            font-family: "IBM Plex Mono", monospace;
+            font-size: 11px;
+            color: #ffffff;
+        }
+
+        .scan-log-item {
+            color: #ffffff;
+            opacity: 0.92;
+            line-height: 1.4;
+        }
+
+        .floating {
+            position: absolute;
+            top: 18px;
+            left: 360px;
+            right: 110px;
+            display: grid;
+            grid-template-columns: repeat(4, minmax(120px, 1fr));
+            gap: 12px;
+        }
+
+        .metric {
+            padding: 14px 16px;
+            border-radius: 20px;
+            background: rgba(10, 23, 32, 0.7);
+            border: 1px solid var(--line);
+            backdrop-filter: blur(12px);
+            box-shadow: var(--shadow);
+        }
+
+        .metric .metric-label {
+            color: var(--muted);
+            font-size: 11px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+        }
+
+        .metric .metric-value {
+            margin-top: 8px;
+            font-size: 28px;
+            font-weight: 700;
+            line-height: 1;
+        }
+
+        .metric .metric-sub {
+            margin-top: 8px;
+            color: var(--muted);
+            font-family: "IBM Plex Mono", monospace;
+            font-size: 11px;
+        }
+
+        #toggle-sidebar {
+            position: absolute;
+            top: 18px;
+            right: 18px;
+            width: 74px;
+            height: 74px;
+            border-radius: 22px;
+            background: var(--panel-strong);
+            color: var(--text);
+            border: 1px solid var(--line);
+            box-shadow: var(--shadow);
+            font-size: 12px;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+        }
+
+        .sidebar {
+            position: absolute;
+            top: 0;
+            right: -430px;
+            width: 410px;
+            height: 100vh;
+            padding: 22px 20px 28px;
+            background: rgba(7, 17, 24, 0.96);
+            border-left: 1px solid var(--line);
+            backdrop-filter: blur(18px);
+            box-shadow: -18px 0 38px rgba(0, 0, 0, 0.38);
+            transition: right 0.28s ease;
+            overflow-y: auto;
+        }
+
+        .sidebar.open {
+            right: 0;
+        }
+
+        .sidebar-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 18px;
+        }
+
+        .sidebar h3 {
+            margin: 0;
+            font-size: 22px;
+            letter-spacing: -0.03em;
+        }
+
+        .sidebar p {
+            margin: 6px 0 0;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        #link-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: grid;
+            gap: 12px;
+        }
+
+        .result-card {
+            padding: 14px;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(198, 223, 237, 0.09);
+        }
+
+        .result-top {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .site-name {
+            display: block;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            line-height: 1.35;
+        }
+
+        .site-badges {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 6px;
+        }
+
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            min-height: 28px;
+            padding: 0 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            font-family: "IBM Plex Mono", monospace;
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text);
+        }
+
+        .pill.confirmed {
+            background: rgba(88, 240, 177, 0.12);
+            color: var(--confirmed);
+        }
+
+        .pill.context {
+            background: rgba(199, 168, 255, 0.12);
+            color: var(--context);
+        }
+
+        .pill.risk {
+            background: rgba(255, 109, 122, 0.14);
+            color: var(--danger);
+        }
+
+        .pill.intel {
+            background: rgba(102, 224, 255, 0.12);
+            color: var(--intel);
+        }
+
+        .result-link,
+        .result-text,
+        .result-reason {
+            font-size: 13px;
+            line-height: 1.55;
+            word-break: break-word;
+        }
+
+        .result-link {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        .result-link:hover {
+            text-decoration: underline;
+        }
+
+        .result-text {
+            color: var(--text);
+        }
+
+        .result-reason {
+            margin-top: 10px;
+            color: var(--muted);
+        }
+
+        .legend {
+            position: absolute;
+            left: 18px;
+            right: 18px;
+            bottom: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 14px 18px;
+            border-radius: 20px;
+            background: rgba(10, 22, 31, 0.72);
+            border: 1px solid var(--line);
+            backdrop-filter: blur(12px);
+            box-shadow: var(--shadow);
+        }
+
+        .legend-items {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .legend-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .legend-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 999px;
+            display: inline-block;
+        }
+
+        .legend-note {
+            color: var(--muted);
+            font-size: 12px;
+            font-family: "IBM Plex Mono", monospace;
+        }
+
+        @media (max-width: 1200px) {
+            .floating {
+                left: 18px;
+                right: 110px;
+                top: auto;
+                bottom: 96px;
+                grid-template-columns: repeat(2, minmax(130px, 1fr));
+            }
+        }
+
+        @media (max-width: 900px) {
+            .panel {
+                width: calc(100% - 36px);
+                max-width: none;
+            }
+
+            .floating {
+                left: 18px;
+                right: 18px;
+                top: 355px;
+                bottom: auto;
+            }
+
+            .sidebar {
+                width: min(100%, 410px);
+            }
+
+            .legend {
+                left: 12px;
+                right: 12px;
+                bottom: 12px;
+                flex-direction: column;
+                align-items: flex-start;
+            }
+        }
+
+        @media (max-width: 720px) {
+            .panel {
+                padding: 16px;
+                border-radius: 22px;
+            }
+
+            .button-row {
+                grid-template-columns: 1fr;
+            }
+
+            .floating {
+                top: 420px;
+                grid-template-columns: 1fr 1fr;
+            }
+
+            #toggle-sidebar {
+                width: 60px;
+                height: 60px;
+                font-size: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="mynetwork"></div>
+
+    <div class="shell">
+        <div class="panel">
+            <span class="eyebrow">OSINT Graph Matrix</span>
+            <h1>Evidence-driven search</h1>
+            <p>Поиск оставлен прежним, но граф теперь показывает не просто узлы, а силу сигнала, контекст и причину каждого совпадения.</p>
+
+            <div class="stack">
+                <select id="searchType">
+                    <option value="username">Никнейм / ссылка на профиль</option>
+                    <option value="phone">Телефон</option>
+                    <option value="email">Почта</option>
+                    <option value="domain">Домен</option>
+                </select>
+                <input type="text" id="targetInput" placeholder="Введите цель или ссылку...">
+                <div class="button-row">
+                    <button class="btn-primary" onclick="startSearch()">Запустить поиск</button>
+                    <button class="btn-secondary" onclick="clearGraph()">Очистить граф</button>
+                </div>
+                <div id="loader" class="loader">Сканирование источников...</div>
+                <div id="scanLog" class="scan-log">
+                    <div class="scan-log-title">Живой лог сканирования</div>
+                    <div id="scanLogList" class="scan-log-list"></div>
+                </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="label">Анализ изображения</div>
+            <input type="file" id="fileInput" accept="image/*">
+            <button class="btn-secondary btn-wide" onclick="uploadFile()">Извлечь метаданные</button>
+        </div>
+
+        <div class="floating">
+            <div class="metric">
+                <div class="metric-label">Общий счёт</div>
+                <div class="metric-value" id="metric-total">0</div>
+                <div class="metric-sub">узлов в отчёте</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Подтверждено</div>
+                <div class="metric-value" id="metric-found">0</div>
+                <div class="metric-sub">сильных совпадений</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Контекст</div>
+                <div class="metric-value" id="metric-mentions">0</div>
+                <div class="metric-sub">следов и привязок</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Уверенность</div>
+                <div class="metric-value" id="metric-confidence">0</div>
+                <div class="metric-sub">среднее по графу</div>
+            </div>
+        </div>
+
+        <button id="toggle-sidebar" onclick="toggleSidebar()">Report</button>
+
+        <div id="sidebar" class="sidebar">
+            <div class="sidebar-header">
+                <div>
+                    <h3>Аналитический отчёт</h3>
+                    <p id="sidebar-subtitle">Здесь появляются узлы, причины и степень доверия.</p>
+                </div>
+                <button class="btn-secondary" style="padding:10px 12px;" onclick="toggleSidebar()">Закрыть</button>
+            </div>
+            <ul id="link-list"></ul>
+        </div>
+
+        <div class="legend">
+            <div class="legend-items">
+                <div class="legend-item"><span class="legend-dot" style="background: var(--confirmed);"></span> Подтверждено</div>
+                <div class="legend-item"><span class="legend-dot" style="background: var(--context);"></span> Контекст</div>
+                <div class="legend-item"><span class="legend-dot" style="background: var(--intel);"></span> Разведданные</div>
+                <div class="legend-item"><span class="legend-dot" style="background: var(--danger);"></span> Риск</div>
+            </div>
+            <div class="legend-note">Ctrl+ЛКМ по узлу открывает ссылку, если это URL</div>
+        </div>
+    </div>
+
+    <script>
+        const nodes = new vis.DataSet([]);
+        const edges = new vis.DataSet([]);
+        let currentJobId = null;
+        const network = new vis.Network(
+            document.getElementById('mynetwork'),
+            { nodes, edges },
+            {
+                autoResize: true,
+                interaction: {
+                    hover: true,
+                    navigationButtons: false,
+                    keyboard: true
+                },
+                nodes: {
+                    shape: 'dot',
+                    borderWidth: 2,
+                    shadow: true,
+                    font: {
+                        color: '#e5f3fb',
+                        size: 13,
+                        face: 'Space Grotesk',
+                        strokeWidth: 4,
+                        strokeColor: '#06131d'
+                    }
+                },
+                edges: {
+                    color: { color: 'rgba(147, 196, 222, 0.26)', highlight: '#66e0ff' },
+                    smooth: { enabled: true, type: 'dynamic' }
+                },
+                physics: {
+                    stabilization: false,
+                    barnesHut: {
+                        gravitationalConstant: -5200,
+                        springLength: 150,
+                        springConstant: 0.028,
+                        damping: 0.18,
+                        avoidOverlap: 0.4
+                    }
+                }
+            }
+        );
+
+        const bucketMeta = {
+            confirmed: { color: '#58f0b1', border: '#b7ffe1', label: 'Подтверждено' },
+            context: { color: '#c7a8ff', border: '#e7d7ff', label: 'Контекст' },
+            intel: { color: '#66e0ff', border: '#b9f3ff', label: 'Разведданные' },
+            risk: { color: '#ff6d7a', border: '#ffc0c6', label: 'Риск' }
+        };
+
+        const bucketHubs = {
+            confirmed: 'Подтверждено',
+            context: 'Контекст',
+            intel: 'Разведданные',
+            risk: 'Риск'
+        };
+
+        network.on('click', function (params) {
+            if (params.nodes.length > 0 && params.event.srcEvent.ctrlKey) {
+                const node = nodes.get(params.nodes[0]);
+                if (node && node.url && /^(https?:|viber:)/.test(node.url)) {
+                    window.open(node.url, '_blank');
+                }
+            }
+        });
+
+        document.getElementById('targetInput').addEventListener('keydown', function (event) {
+            if (event.key === 'Enter') {
+                startSearch();
+            }
+        });
+
+        function toggleSidebar(forceOpen) {
+            const sidebar = document.getElementById('sidebar');
+            if (typeof forceOpen === 'boolean') {
+                sidebar.classList.toggle('open', forceOpen);
+                return;
+            }
+            sidebar.classList.toggle('open');
+        }
+
+        function clearGraph() {
+            nodes.clear();
+            edges.clear();
+            currentJobId = null;
+            document.getElementById('link-list').innerHTML = '';
+            document.getElementById('sidebar-subtitle').textContent = 'Здесь появляются узлы, причины и степень доверия.';
+            document.getElementById('scanLog').style.display = 'none';
+            document.getElementById('scanLogList').innerHTML = '';
+            updateMetrics([]);
+        }
+
+        function rootNodeId(searchType, target) {
+            return `${searchType}:${target}`;
+        }
+
+        function ensureRootNode(id, label, searchType) {
+            const colorMap = {
+                username: '#ffb45e',
+                phone: '#58f0b1',
+                email: '#66e0ff',
+                domain: '#c7a8ff',
+                image: '#ff8e70'
+            };
+
+            if (!nodes.get(id)) {
+                nodes.add({
+                    id,
+                    label,
+                    group: 'root',
+                    color: {
+                        background: colorMap[searchType] || '#ffb45e',
+                        border: '#ffffff'
+                    },
+                    size: 28,
+                    shape: 'diamond',
+                    font: { size: 15, face: 'Space Grotesk', color: '#ffffff', strokeWidth: 4, strokeColor: '#06131d' },
+                    borderWidth: 3,
+                    shadow: true
+                });
+            }
+        }
+
+        function ensureHubNode(rootId, bucket) {
+            const id = `${rootId}:hub:${bucket}`;
+            const meta = bucketMeta[bucket] || bucketMeta.intel;
+            if (!nodes.get(id)) {
+                nodes.add({
+                    id,
+                    label: bucketHubs[bucket] || 'Разведданные',
+                    bucket,
+                    color: {
+                        background: 'rgba(7, 18, 27, 0.85)',
+                        border: meta.color
+                    },
+                    size: 20,
+                    shape: 'ellipse',
+                    font: { size: 13, face: 'Space Grotesk', color: '#ffffff', strokeWidth: 4, strokeColor: '#06131d' },
+                    borderWidth: 2
+                });
+            }
+            const edgeId = `${rootId}->${id}`;
+            if (!edges.get(edgeId)) {
+                edges.add({
+                    id: edgeId,
+                    from: rootId,
+                    to: id,
+                    width: 1.5,
+                    color: meta.color,
+                    opacity: 0.4
+                });
+            }
+            return id;
+        }
+
+        function itemMeta(item) {
+            const bucket = item.bucket || (item.status === 'found' ? 'confirmed' : item.status === 'mention' ? 'context' : item.status === 'alert' ? 'risk' : 'intel');
+            return bucketMeta[bucket] || bucketMeta.intel;
+        }
+
+        function itemConfidence(item) {
+            return Number(item.confidence || item.score || 0);
+        }
+
+        function itemWeight(item) {
+            return Math.max(1, Number(item.weight || Math.round(itemConfidence(item) / 12) || 1));
+        }
+
+        function updateMetrics(results) {
+            const found = results.filter(item => item.status === 'found').length;
+            const mentions = results.filter(item => item.status === 'mention').length;
+            const confidence = results.length
+                ? Math.round(results.reduce((acc, item) => acc + itemConfidence(item), 0) / results.length)
+                : 0;
+
+            document.getElementById('metric-total').textContent = String(results.length);
+            document.getElementById('metric-found').textContent = String(found);
+            document.getElementById('metric-mentions').textContent = String(mentions);
+            document.getElementById('metric-confidence').textContent = String(confidence);
+        }
+
+        function resultValueHtml(item) {
+            if (/^(https?:|viber:)/.test(item.url)) {
+                return `<a class="result-link" href="${item.url}" target="_blank" rel="noreferrer">${item.url}</a>`;
+            }
+            return `<div class="result-text">${item.url}</div>`;
+        }
+
+        function renderScanLog(logs) {
+            const box = document.getElementById('scanLog');
+            const list = document.getElementById('scanLogList');
+            if (!logs || logs.length === 0) {
+                box.style.display = 'none';
+                list.innerHTML = '';
+                return;
+            }
+
+            box.style.display = 'block';
+            list.innerHTML = logs.map(item => {
+                const progress = typeof item.progress === 'number' ? `${item.progress}%` : '--';
+                return `<div class="scan-log-item">[${item.timestamp}] ${progress} ${item.message}</div>`;
+            }).join('');
+            list.scrollTop = list.scrollHeight;
+        }
+
+        async function waitForJob(jobId, loader) {
+            currentJobId = jobId;
+            while (currentJobId === jobId) {
+                const response = await fetch(`/api/search/jobs/${jobId}`);
+                const state = await response.json();
+                renderScanLog(state.logs || []);
+                loader.textContent = `Сканирование: ${state.progress || 0}%`;
+
+                if (state.status === 'completed') {
+                    loader.textContent = 'Сканирование завершено';
+                    return state.results || [];
+                }
+
+                if (state.status === 'failed') {
+                    throw new Error(state.error || 'Задача завершилась с ошибкой');
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 900));
+            }
+            throw new Error('Задача была прервана');
+        }
+
+        function renderSidebar(results, label) {
+            const list = document.getElementById('link-list');
+            const subtitle = document.getElementById('sidebar-subtitle');
+            subtitle.textContent = `Цель: ${label} | Узлов: ${results.length}`;
+            list.innerHTML = '';
+
+            results.forEach(item => {
+                const bucket = item.bucket || 'intel';
+                const confidence = itemConfidence(item);
+                const category = item.category || 'misc';
+                const reason = item.reason || 'Причина не указана';
+
+                list.innerHTML += `
+                    <li class="result-card">
+                        <div class="result-top">
+                            <div>
+                                <span class="site-name">${item.site}</span>
+                                <div class="site-badges">
+                                    <span class="pill ${bucket}">${bucketMeta[bucket]?.label || bucket}</span>
+                                    <span class="pill">${confidence}/100</span>
+                                    <span class="pill">${category}</span>
+                                </div>
+                            </div>
+                        </div>
+                        ${resultValueHtml(item)}
+                        <div class="result-reason">${reason}</div>
+                    </li>
+                `;
+            });
+        }
+
+        function renderResults(rootId, label, searchType, results) {
+            updateMetrics(results);
+            renderSidebar(results, label);
+
+            results.forEach(item => {
+                const bucket = item.bucket || 'intel';
+                const meta = itemMeta(item);
+                const confidence = itemConfidence(item);
+                const size = 12 + Math.max(0, confidence * 0.16);
+                const hubId = ensureHubNode(rootId, bucket);
+                const nodeId = `${rootId}:${item.site}:${item.url}`;
+                const title = `
+                    <div style="font-family: Space Grotesk, sans-serif; max-width: 280px;">
+                        <strong>${item.site}</strong><br>
+                        Тип: ${item.category || 'misc'}<br>
+                        Уверенность: ${confidence}/100<br>
+                        Причина: ${item.reason || 'не указана'}
+                    </div>
+                `;
+
+                if (!nodes.get(nodeId)) {
+                    nodes.add({
+                        id: nodeId,
+                        label: item.site,
+                        url: item.url,
+                        bucket,
+                        category: item.category,
+                        confidence,
+                        color: {
+                            background: meta.color,
+                            border: meta.border
+                        },
+                        size,
+                        title,
+                        shape: item.node_kind === 'summary' ? 'box' : 'dot',
+                        borderWidth: item.node_kind === 'summary' ? 3 : 2,
+                        font: {
+                            color: '#ffffff',
+                            face: 'Space Grotesk',
+                            size: item.node_kind === 'summary' ? 14 : 12,
+                            strokeWidth: 4,
+                            strokeColor: '#06131d'
+                        }
+                    });
+                } else {
+                    nodes.update({
+                        id: nodeId,
+                        size,
+                        title,
+                        confidence
+                    });
+                }
+
+                const edgeId = `${hubId}->${nodeId}`;
+                const edgeWidth = 1 + itemWeight(item) * 0.55;
+                if (!edges.get(edgeId)) {
+                    edges.add({
+                        id: edgeId,
+                        from: hubId,
+                        to: nodeId,
+                        width: edgeWidth,
+                        color: meta.color
+                    });
+                } else {
+                    edges.update({
+                        id: edgeId,
+                        width: edgeWidth,
+                        color: meta.color
+                    });
+                }
+            });
+
+            network.fit({
+                nodes: nodes.getIds(),
+                animation: { duration: 500, easingFunction: 'easeInOutQuad' }
+            });
+            toggleSidebar(true);
+        }
+
+        async function startSearch() {
+            const input = document.getElementById('targetInput');
+            const searchType = document.getElementById('searchType').value;
+            const rawTarget = input.value.trim();
+            if (!rawTarget) return;
+
+            const normalizedDisplay = rawTarget.replace(/^@/, '');
+            const rootId = rootNodeId(searchType, normalizedDisplay);
+            ensureRootNode(rootId, normalizedDisplay, searchType);
+
+            const loader = document.getElementById('loader');
+            loader.style.display = 'block';
+            loader.textContent = 'Создание задачи поиска...';
+            document.getElementById('scanLog').style.display = 'none';
+            document.getElementById('scanLogList').innerHTML = '';
+
+            try {
+                const response = await fetch('/api/search/jobs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ target: rawTarget, type: searchType })
+                });
+                if (!response.ok) {
+                    let message = `HTTP ${response.status}`;
+                    try {
+                        const errorData = await response.json();
+                        if (errorData.detail) message = errorData.detail;
+                    } catch (_) {}
+                    throw new Error(message);
+                }
+
+                const state = await response.json();
+                renderScanLog(state.logs || []);
+                const data = await waitForJob(state.job_id, loader);
+                renderResults(rootId, normalizedDisplay, searchType, data);
+            } catch (error) {
+                renderSidebar([
+                    {
+                        site: 'Ошибка поиска',
+                        url: error.message,
+                        status: 'alert',
+                        bucket: 'risk',
+                        confidence: 95,
+                        category: 'system',
+                        reason: 'сервер вернул ошибку или источник временно недоступен'
+                    }
+                ], normalizedDisplay);
+                updateMetrics([]);
+                toggleSidebar(true);
+            } finally {
+                loader.style.display = 'none';
+            }
+        }
+
+        async function uploadFile() {
+            const file = document.getElementById('fileInput').files[0];
+            if (!file) return;
+
+            const rootId = rootNodeId('image', `${file.name}:${file.size}`);
+            ensureRootNode(rootId, file.name, 'image');
+
+            const loader = document.getElementById('loader');
+            loader.style.display = 'block';
+            loader.textContent = 'Извлечение метаданных...';
+
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                const response = await fetch('/api/metadata', { method: 'POST', body: formData });
+                if (!response.ok) {
+                    let message = `HTTP ${response.status}`;
+                    try {
+                        const errorData = await response.json();
+                        if (errorData.detail) message = errorData.detail;
+                    } catch (_) {}
+                    throw new Error(message);
+                }
+
+                const data = await response.json();
+                renderResults(rootId, file.name, 'image', data);
+            } catch (error) {
+                renderSidebar([
+                    {
+                        site: 'Ошибка метаданных',
+                        url: error.message,
+                        status: 'alert',
+                        bucket: 'risk',
+                        confidence: 95,
+                        category: 'system',
+                        reason: 'не удалось обработать изображение'
+                    }
+                ], file.name);
+                updateMetrics([]);
+                toggleSidebar(true);
+            } finally {
+                loader.style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>
