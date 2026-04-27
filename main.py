@@ -93,7 +93,7 @@ MALTEGO_ROOT_TYPES = {
     "image": "maltego.Phrase",
 }
 
-app = FastAPI(title="Blue Static OSINT")
+app = FastAPI(title="Evidence-driven-search")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
