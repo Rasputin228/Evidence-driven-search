@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import csv
 import hashlib
+import ipaddress
 import io
 import json
 import os
@@ -20,28 +22,39 @@ import phonenumbers
 import uvicorn
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from PIL.ExifTags import GPSTAGS, TAGS
 from phonenumbers import PhoneNumberType, carrier, geocoder, timezone
 from pydantic import BaseModel
+from osint_graph.bootstrap import load_local_env
 from osint_graph.curated_sources import (
+    domain_manual_sources,
     email_manual_sources,
     phone_manual_sources,
     username_manual_sources,
 )
 from osint_graph.external_tools import (
+    active_censys_mode,
+    search_domain_with_censys,
     search_email_with_holehe,
+    search_image_with_search4faces,
     search_username_with_maigret,
     search_username_with_sherlock,
+    spiderfoot_handoff_url,
     tool_availability,
 )
+from osint_graph.storage import SQLiteStorage
+
+load_local_env()
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 WMN_CACHE_PATH = BASE_DIR / "wmn-data.json"
 WMN_DB_URL = "https://raw.githubusercontent.com/WebBreacher/WhatsMyName/main/wmn-data.json"
+_db_path_value = Path(os.getenv("OSINT_DB_PATH", "osint_graph_app.db"))
+SQLITE_DB_PATH = _db_path_value if _db_path_value.is_absolute() else (BASE_DIR / _db_path_value).resolve()
 
 REQUEST_HEADERS = {
     "User-Agent": (
@@ -72,13 +85,21 @@ STATUS_BUCKETS = {
     "alert": "risk",
 }
 
-app = FastAPI(title="OSINT Graph App")
+MALTEGO_ROOT_TYPES = {
+    "username": "maltego.Alias",
+    "email": "maltego.EmailAddress",
+    "phone": "maltego.PhoneNumber",
+    "domain": "maltego.Domain",
+    "image": "maltego.Phrase",
+}
+
+app = FastAPI(title="Blue Static OSINT")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 cached_db: list[dict[str, Any]] = []
-search_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
-search_jobs: dict[str, "SearchJobState"] = {}
+storage = SQLiteStorage(SQLITE_DB_PATH)
+storage.initialize()
 
 
 @dataclass(slots=True)
@@ -235,19 +256,107 @@ def make_cache_key(search_type: str, raw_target: str) -> str:
 
 def get_cached_result(search_type: str, raw_target: str) -> list[dict[str, Any]] | None:
     cache_key = make_cache_key(search_type, raw_target)
-    cached = search_cache.get(cache_key)
-    if not cached:
-        return None
-
-    created_at, payload = cached
-    if time.time() - created_at > CACHE_TTL_SECONDS:
-        search_cache.pop(cache_key, None)
-        return None
-    return copy.deepcopy(payload)
+    cached = storage.get_cached_result(cache_key)
+    return copy.deepcopy(cached) if cached is not None else None
 
 
 def store_cached_result(search_type: str, raw_target: str, payload: list[dict[str, Any]]) -> None:
-    search_cache[make_cache_key(search_type, raw_target)] = (time.time(), copy.deepcopy(payload))
+    storage.store_cached_result(
+        cache_key=make_cache_key(search_type, raw_target),
+        search_type=search_type,
+        raw_target=raw_target,
+        normalized_target=normalize_whitespace(raw_target).lower(),
+        payload=copy.deepcopy(payload),
+        ttl_seconds=CACHE_TTL_SECONDS,
+    )
+
+
+def normalize_export_target(raw_target: str, search_type: str) -> str:
+    if search_type == "username":
+        return extract_username_from_text(raw_target)
+    if search_type == "email":
+        return normalize_email(raw_target)
+    if search_type == "phone":
+        parsed = normalize_phone(raw_target)
+        return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+    if search_type == "domain":
+        return normalize_domain(raw_target)
+    return normalize_whitespace(raw_target)
+
+
+def infer_maltego_entity_type(value: str, fallback: str = "maltego.Phrase") -> str:
+    normalized = normalize_whitespace(value)
+    if not normalized:
+        return fallback
+    if normalized.startswith(("http://", "https://")):
+        return "maltego.URL"
+    try:
+        ip_obj = ipaddress.ip_address(normalized)
+    except ValueError:
+        ip_obj = None
+    if ip_obj is not None:
+        return "maltego.IPv6Address" if ip_obj.version == 6 else "maltego.IPv4Address"
+    if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
+        return "maltego.EmailAddress"
+    if re.fullmatch(r"\+?[0-9][0-9\s().-]{5,}", normalized):
+        return "maltego.PhoneNumber"
+    if re.fullmatch(r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}", normalized):
+        return "maltego.Domain"
+    return fallback
+
+
+def build_maltego_csv_payload(search_type: str, raw_target: str, results: list[dict[str, Any]]) -> str:
+    buffer = io.StringIO(newline="")
+    fieldnames = [
+        "source_maltego_type",
+        "source_value",
+        "target_maltego_type",
+        "target_value",
+        "target_label",
+        "target_url",
+        "status",
+        "bucket",
+        "confidence",
+        "category",
+        "reason",
+    ]
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+
+    source_value = normalize_export_target(raw_target, search_type)
+    source_type = MALTEGO_ROOT_TYPES.get(search_type, "maltego.Phrase")
+
+    for item in results:
+        if str(item.get("node_kind", "evidence")) == "summary":
+            continue
+
+        target_value = normalize_whitespace(str(item.get("url", "")).strip()) or normalize_whitespace(str(item.get("site", "")).strip())
+        if not target_value:
+            continue
+
+        writer.writerow(
+            {
+                "source_maltego_type": source_type,
+                "source_value": source_value,
+                "target_maltego_type": infer_maltego_entity_type(target_value),
+                "target_value": target_value,
+                "target_label": str(item.get("site", "")),
+                "target_url": str(item.get("url", "")),
+                "status": str(item.get("status", "")),
+                "bucket": str(item.get("bucket", STATUS_BUCKETS.get(str(item.get("status", "")), "intel"))),
+                "confidence": str(item.get("confidence", item.get("score", ""))),
+                "category": str(item.get("category", "")),
+                "reason": str(item.get("reason", "")),
+            }
+        )
+
+    return "\ufeff" + buffer.getvalue()
+
+
+def safe_export_filename(search_type: str, raw_target: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", normalize_whitespace(raw_target)).strip("-")
+    cleaned = cleaned[:60] or "target"
+    return f'maltego-{search_type}-{cleaned}.csv'
 
 
 async def update_job(
@@ -278,6 +387,8 @@ async def update_job(
         }
     )
     job.logs = job.logs[-80:]
+    storage.update_job_state(job.snapshot())
+    storage.append_job_log(job.job_id, timestamp, message, job.progress)
 
 
 def extract_username_from_text(raw_target: str) -> str:
@@ -444,6 +555,9 @@ async def load_wmn_db() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    storage.initialize()
+    storage.mark_incomplete_runs_interrupted()
+    storage.purge_expired_cache()
     await load_wmn_db()
 
 
@@ -862,7 +976,7 @@ async def analyze_email(target: str, job: SearchJobState | None = None) -> list[
 async def enumerate_subdomains(target: str, job: SearchJobState | None = None) -> list[SearchResult]:
     domain = normalize_domain(target)
     evidence: list[SearchResult] = []
-    await update_job(job, f"Нормализация домена: {domain}", total=4, status="running")
+    await update_job(job, f"Нормализация домена: {domain}", total=6, status="running")
 
     try:
         ip_addresses = sorted({item[4][0] for item in socket.getaddrinfo(domain, None)})
@@ -917,6 +1031,14 @@ async def enumerate_subdomains(target: str, job: SearchJobState | None = None) -
         )
     await update_job(job, "Поддомены собраны", increment=1)
 
+    await update_job(job, f"Проверка Censys ({active_censys_mode()} mode), если ключи доступны")
+    evidence.extend(hydrate_result(item) for item in await search_domain_with_censys(domain))
+    await update_job(job, "Censys обработан", increment=1)
+
+    await update_job(job, "Добавление ручных domain-источников")
+    evidence.extend(hydrate_result(item) for item in domain_manual_sources(domain, spiderfoot_handoff_url()))
+    await update_job(job, "Ручные domain-источники добавлены", increment=1)
+
     return build_aggregate_results(domain, "domain", evidence) + evidence
 
 
@@ -948,13 +1070,19 @@ def decode_exif_value(tag_name: str, value: Any) -> str:
 
 @app.get("/api/health")
 async def healthcheck() -> dict[str, Any]:
+    availability = tool_availability()
     return {
         "status": "ok",
         "wmn_sites": len(cached_db),
-        "cache_entries": len(search_cache),
+        "cache_entries": storage.cache_count(),
         "verify_ssl": VERIFY_SSL,
-        "external_tools": tool_availability(),
-        "active_jobs": sum(1 for job in search_jobs.values() if job.status in {"queued", "running"}),
+        "sqlite_db_path": str(SQLITE_DB_PATH),
+        "external_tools": availability,
+        "censys_legacy": availability.get("censys_legacy", False),
+        "censys_platform": availability.get("censys_platform", False),
+        "active_censys_mode": active_censys_mode(),
+        "export_formats": ["maltego-csv"],
+        "active_jobs": storage.active_run_count(),
     }
 
 
@@ -986,22 +1114,27 @@ async def perform_search_internal(
 async def run_search_job(job: SearchJobState) -> None:
     job.started_at = time.time()
     job.status = "running"
+    storage.update_job_state(job.snapshot())
     await update_job(job, "Задача поставлена в обработку")
     try:
         job.results = await perform_search_internal(job.target, job.search_type, job=job)
+        storage.replace_job_results(job.job_id, job.results)
         job.status = "completed"
         job.progress = 100
         job.finished_at = time.time()
+        storage.update_job_state(job.snapshot())
         await update_job(job, "Поиск завершён", status="completed")
     except HTTPException as exc:
         job.status = "failed"
         job.error = str(exc.detail)
         job.finished_at = time.time()
+        storage.update_job_state(job.snapshot())
         await update_job(job, f"Ошибка: {job.error}", status="failed")
     except Exception as exc:
         job.status = "failed"
         job.error = str(exc)
         job.finished_at = time.time()
+        storage.update_job_state(job.snapshot())
         await update_job(job, f"Внутренняя ошибка: {job.error}", status="failed")
 
 
@@ -1016,17 +1149,22 @@ async def create_search_job(request: SearchJobRequest) -> dict[str, Any]:
         target=request.target,
         search_type=search_type,
     )
-    search_jobs[job.job_id] = job
+    storage.create_job(job.snapshot())
     asyncio.create_task(run_search_job(job))
     return job.snapshot()
 
 
 @app.get("/api/search/jobs/{job_id}")
 async def get_search_job(job_id: str) -> dict[str, Any]:
-    job = search_jobs.get(job_id)
-    if job is None:
+    snapshot = storage.get_job_snapshot(job_id)
+    if snapshot is None:
         raise HTTPException(status_code=404, detail="Задача не найдена")
-    return job.snapshot()
+    return snapshot
+
+
+@app.get("/api/search/jobs")
+async def list_search_jobs(limit: int = Query(20, ge=1, le=100)) -> list[dict[str, Any]]:
+    return storage.list_recent_jobs(limit=limit)
 
 
 @app.get("/api/search")
@@ -1035,6 +1173,22 @@ async def perform_search(
     type: str = Query(..., pattern="^(username|email|phone|domain)$"),
 ) -> list[dict[str, Any]]:
     return await perform_search_internal(target, type)
+
+
+@app.get("/api/export/maltego")
+async def export_maltego(
+    target: str = Query(..., min_length=1),
+    type: str = Query(..., pattern="^(username|email|phone|domain)$"),
+) -> Response:
+    results = await perform_search_internal(target, type)
+    payload = build_maltego_csv_payload(type, target, results)
+    file_name = safe_export_filename(type, target)
+    storage.store_export("maltego-csv", type, target, file_name, payload)
+    return Response(
+        content=payload,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{file_name}"'},
+    )
 
 
 @app.post("/api/metadata")
@@ -1053,38 +1207,39 @@ async def analyze_metadata(file: UploadFile = File(...)) -> list[dict[str, Any]]
     exif = image.getexif()
     if not exif:
         evidence.append(result("ℹ️ EXIF", "Метаданные не найдены", "info", 78, 78, "image-meta", "EXIF-блок отсутствует"))
-        return dedupe_and_sort(build_aggregate_results(file.filename or "upload", "image", evidence) + evidence)
+    else:
+        interesting_tags = {"Make", "Model", "Software", "DateTime", "GPSInfo", "Artist", "Copyright"}
+        for tag, value in exif.items():
+            tag_name = TAGS.get(tag, str(tag))
+            if tag_name not in interesting_tags:
+                continue
+            decoded = decode_exif_value(tag_name, value)
+            if tag_name == "GPSInfo":
+                evidence.append(
+                    result(
+                        "EXIF: GPSInfo",
+                        decoded[:200],
+                        "alert",
+                        94,
+                        94,
+                        "image-exif",
+                        "в изображении есть координаты, это потенциально критично",
+                    )
+                )
+            else:
+                evidence.append(
+                    result(
+                        f"EXIF: {tag_name}",
+                        decoded[:200],
+                        "info",
+                        80,
+                        80,
+                        "image-exif",
+                        "извлечённый EXIF-тег",
+                    )
+                )
 
-    interesting_tags = {"Make", "Model", "Software", "DateTime", "GPSInfo", "Artist", "Copyright"}
-    for tag, value in exif.items():
-        tag_name = TAGS.get(tag, str(tag))
-        if tag_name not in interesting_tags:
-            continue
-        decoded = decode_exif_value(tag_name, value)
-        if tag_name == "GPSInfo":
-            evidence.append(
-                result(
-                    "EXIF: GPSInfo",
-                    decoded[:200],
-                    "alert",
-                    94,
-                    94,
-                    "image-exif",
-                    "в изображении есть координаты, это потенциально критично",
-                )
-            )
-        else:
-            evidence.append(
-                result(
-                    f"EXIF: {tag_name}",
-                    decoded[:200],
-                    "info",
-                    80,
-                    80,
-                    "image-exif",
-                    "извлечённый EXIF-тег",
-                )
-            )
+    evidence.extend(hydrate_result(item) for item in await search_image_with_search4faces(payload))
 
     return dedupe_and_sort(build_aggregate_results(file.filename or "upload", "image", evidence) + evidence)
 

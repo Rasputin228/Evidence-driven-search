@@ -3,8 +3,14 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+.env
+osint_graph_app.db
+osint_graph_app.db-shm
+osint_graph_app.db-wal
+
+reports/
 .pytest_cache/
 .mypy_cache/
-reports/
 .DS_Store
 Thumbs.db

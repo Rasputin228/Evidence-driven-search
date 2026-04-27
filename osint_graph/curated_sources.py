@@ -158,3 +158,51 @@ def email_manual_sources(email: str) -> list[dict[str, str | int]]:
             "reason": "поиск следов email во VK через Яндекс",
         },
     ]
+
+
+def domain_manual_sources(domain: str, spiderfoot_url: str | None = None) -> list[dict[str, str | int]]:
+    exact_query = f"\"{domain}\""
+    results: list[dict[str, str | int]] = [
+        {
+            "site": "🔎 Yandex: домен",
+            "url": _engine_url("https://yandex.ru/search/?text=", exact_query),
+            "status": "mention",
+            "score": 66,
+            "confidence": 66,
+            "category": "domain-manual",
+            "reason": "ручной поиск домена в Яндексе",
+        },
+        {
+            "site": "🔎 Google: домен",
+            "url": _engine_url("https://www.google.com/search?q=", exact_query),
+            "status": "mention",
+            "score": 66,
+            "confidence": 66,
+            "category": "domain-manual",
+            "reason": "ручной поиск домена в Google",
+        },
+        {
+            "site": "📜 crt.sh direct",
+            "url": f"https://crt.sh/?q={quote_plus(f'%.{domain}')}",
+            "status": "mention",
+            "score": 69,
+            "confidence": 69,
+            "category": "domain-certs",
+            "reason": "ручной просмотр сертификатов и поддоменов через crt.sh",
+        },
+    ]
+
+    if spiderfoot_url:
+        results.append(
+            {
+                "site": "🕷️ SpiderFoot handoff",
+                "url": spiderfoot_url,
+                "status": "info",
+                "score": 72,
+                "confidence": 72,
+                "category": "external-spiderfoot",
+                "reason": "локальный handoff в SpiderFoot Web UI для глубокой автоматизированной разведки",
+            }
+        )
+
+    return results

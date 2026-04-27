@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OSINT Graph Matrix</title>
+    <title>Blue Static OSINT</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -162,6 +162,13 @@
 
         button:hover {
             transform: translateY(-1px);
+        }
+
+        button:disabled {
+            opacity: 0.46;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
         }
 
         .btn-primary {
@@ -548,9 +555,9 @@
 
     <div class="shell">
         <div class="panel">
-            <span class="eyebrow">OSINT Graph Matrix</span>
-            <h1>Evidence-driven search</h1>
-            <p>Поиск оставлен прежним, но граф теперь показывает не просто узлы, а силу сигнала, контекст и причину каждого совпадения.</p>
+            <span class="eyebrow">Blue Static OSINT</span>
+            <h1>Low-energy shell. High-signal graph.</h1>
+            <p>Ночное расследование без лишнего шума: граф показывает силу сигнала, контекст и причину каждого совпадения.</p>
 
             <div class="stack">
                 <select id="searchType">
@@ -564,6 +571,7 @@
                     <button class="btn-primary" onclick="startSearch()">Запустить поиск</button>
                     <button class="btn-secondary" onclick="clearGraph()">Очистить граф</button>
                 </div>
+                <button id="exportMaltegoBtn" class="btn-secondary btn-wide" onclick="exportMaltego()" disabled>Экспорт в Maltego CSV</button>
                 <div id="loader" class="loader">Сканирование источников...</div>
                 <div id="scanLog" class="scan-log">
                     <div class="scan-log-title">Живой лог сканирования</div>
@@ -606,7 +614,7 @@
         <div id="sidebar" class="sidebar">
             <div class="sidebar-header">
                 <div>
-                    <h3>Аналитический отчёт</h3>
+                    <h3>Static Report</h3>
                     <p id="sidebar-subtitle">Здесь появляются узлы, причины и степень доверия.</p>
                 </div>
                 <button class="btn-secondary" style="padding:10px 12px;" onclick="toggleSidebar()">Закрыть</button>
@@ -629,6 +637,7 @@
         const nodes = new vis.DataSet([]);
         const edges = new vis.DataSet([]);
         let currentJobId = null;
+        let currentExportUrl = null;
         const network = new vis.Network(
             document.getElementById('mynetwork'),
             { nodes, edges },
@@ -710,11 +719,27 @@
             nodes.clear();
             edges.clear();
             currentJobId = null;
+            resetExportUrl();
             document.getElementById('link-list').innerHTML = '';
             document.getElementById('sidebar-subtitle').textContent = 'Здесь появляются узлы, причины и степень доверия.';
             document.getElementById('scanLog').style.display = 'none';
             document.getElementById('scanLogList').innerHTML = '';
             updateMetrics([]);
+        }
+
+        function resetExportUrl() {
+            currentExportUrl = null;
+            document.getElementById('exportMaltegoBtn').disabled = true;
+        }
+
+        function setExportUrl(searchType, rawTarget) {
+            currentExportUrl = `/api/export/maltego?type=${encodeURIComponent(searchType)}&target=${encodeURIComponent(rawTarget)}`;
+            document.getElementById('exportMaltegoBtn').disabled = false;
+        }
+
+        function exportMaltego() {
+            if (!currentExportUrl) return;
+            window.open(currentExportUrl, '_blank', 'noopener');
         }
 
         function rootNodeId(searchType, target) {
@@ -813,6 +838,17 @@
             return `<div class="result-text">${item.url}</div>`;
         }
 
+        function sourceBadgeHtml(item) {
+            const category = item.category || '';
+            if (category === 'external-censys-platform') {
+                return '<span class="pill">Censys Platform</span>';
+            }
+            if (category === 'external-censys-legacy') {
+                return '<span class="pill">Censys Legacy</span>';
+            }
+            return '';
+        }
+
         function renderScanLog(logs) {
             const box = document.getElementById('scanLog');
             const list = document.getElementById('scanLogList');
@@ -873,6 +909,7 @@
                                     <span class="pill ${bucket}">${bucketMeta[bucket]?.label || bucket}</span>
                                     <span class="pill">${confidence}/100</span>
                                     <span class="pill">${category}</span>
+                                    ${sourceBadgeHtml(item)}
                                 </div>
                             </div>
                         </div>
@@ -967,6 +1004,7 @@
             const searchType = document.getElementById('searchType').value;
             const rawTarget = input.value.trim();
             if (!rawTarget) return;
+            resetExportUrl();
 
             const normalizedDisplay = rawTarget.replace(/^@/, '');
             const rootId = rootNodeId(searchType, normalizedDisplay);
@@ -997,6 +1035,7 @@
                 renderScanLog(state.logs || []);
                 const data = await waitForJob(state.job_id, loader);
                 renderResults(rootId, normalizedDisplay, searchType, data);
+                setExportUrl(searchType, rawTarget);
             } catch (error) {
                 renderSidebar([
                     {
@@ -1019,6 +1058,7 @@
         async function uploadFile() {
             const file = document.getElementById('fileInput').files[0];
             if (!file) return;
+            resetExportUrl();
 
             const rootId = rootNodeId('image', `${file.name}:${file.size}`);
             ensureRootNode(rootId, file.name, 'image');
